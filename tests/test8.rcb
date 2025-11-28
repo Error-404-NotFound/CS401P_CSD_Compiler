@@ -1,0 +1,20 @@
+func classifyChar() -> int {
+    ch:char;
+    category:int;
+    ch = 'a';
+    category = 0;
+    
+    match (ch) {
+        'a' => {
+            category = 1;
+        }
+        'b' => {
+            category = 2;
+        }
+        _ => {
+            category = 99;
+        }
+    }
+    
+    reply category;
+}

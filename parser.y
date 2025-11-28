@@ -1,533 +1,1907 @@
 %{
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdbool.h>
+#include<stdio.h>
+#include<stdbool.h>
+#include<string.h>
+#include<stdlib.h>
+#include<ctype.h>
+#include<limits.h>
+#include<float.h>
+#include<math.h>
+#include<iostream>
+#include<vector>
+#include<stack>
+#include<queue>
+#include<set>
+#include<string>
+#include<algorithm>
+#include<unordered_map>
+#include<map>
+#include<list>
+#include<fstream>
+#include<cctype>
 
-int yylex(void);
+#define add_tac($$, $1, $2, $3) {strcpy($$.type, $1.type);\
+    sprintf($$.lexeme, get_temp().c_str());\
+    string lt=string($1.type);\
+    string rt=string($3.type);\
+    if((lt == "CHAR" && rt == "INT") || (rt == "CHAR" && lt == "INT")){\
+        strcpy($$.type, "INT");\
+    }\
+    else if((lt == "FLOAT" && rt == "INT") || (rt == "FLOAT" && lt == "INT")){\
+        strcpy($$.type, "FLOAT");\
+    }\
+    else if((lt == "FLOAT" && rt == "FLOAT") || (lt == "INT" && rt == "INT") || (lt == "CHAR" && rt == "CHAR")){\
+        strcpy($$.type, $1.type);\
+    }\
+    else{\
+        errorBuffer.push_back("Error: Cannot convert between CHAR and FLOAT in line : " + to_string(countn+1));\
+    }}
+using namespace std;
+
 void yyerror(const char* s);
-extern FILE* yyin;
+int yylex();
+int yyparse();
+int yywrap();
+int yytext();
+extern FILE * yyin;
 
-/* ---------- three-address & backpatching helpers ---------- */
+bool check_declaration(string variable);
+bool check_scope(string variable);
+bool multiple_declaration(string variable);
+bool is_reserved_word(string id);
+bool function_check(string variable, int flag);
+bool type_check(string type1, string type2);
+bool check_type(string l, string r);
+string get_temp();
+void init_library_registry();
+void load_library_function(string lib_name, string func_name);
 
-typedef struct List { int addr; struct List* next; } List;
+queue<string> free_temp;
+set<string> const_temps;
+void PrintStack(stack<int> s);
 
-typedef struct Node {
-  char val[128];
-  char type[64];
-  bool isPostfix;
-  List *tlist, *flist, *nlist;
-} Node;
+struct variableDetails {
+    string dataTypes;
+    int scope;
+    int size;   // for arrays
+    int isArray;
+    int lineNumber; 
+};
 
-static int lbl = 0;
-static int code_i = 0;
-static char code[20000][128];
+vector<string> tac;
+map<string, string> temp_map;
+vector<string> errorBuffer;
+int variableCount = 0;
+int labelCount = 0;
+int temp_index;
+int temp_label;
 
-static char* newtmp(void){
-  static char b[64];
-  sprintf(b,"t%d",lbl++);
-  return strdup(b);
-}
+stack<int> loop_continue, loop_break;
+stack<pair<string, vector<string>>> func_call_id;
+stack<int> scope_history;
+int scope_counter = 0;
 
-static List* mklist(int a){
-  List* x = (List*)malloc(sizeof(List));
-  x->addr = a; x->next = NULL;
-  return x;
-}
-static List* merge(List* a, List* b){
-  if(!a) return b; if(!b) return a;
-  List* t=a; while(t->next) t=t->next; t->next=b; return a;
-}
-static void backpatch(List* l, int target){
-  for(; l; l=l->next){
-    int n = strlen(code[l->addr]);
-    sprintf(code[l->addr]+n,"%d",target);
-  }
-}
+// for array DeclarationStatement with initialization
+string curr_array;
+int arr_index=0;
 
-/* ---------- symbol tables with scope ---------- */
+extern int countn;
 
-typedef struct Sym {
-  char* name;
-  char* type;
-  int   width;
-  int   offset;
-  struct Sym* next;
-} Sym;
+vector<string> reserved = {
+    "int", "float", "char", "string", "void", 
+    "if", "elif", "else", "for", "while", "break", "continue", 
+    "main", "return", "switch", "case", "input", "result"
+};
 
-typedef struct Table {
-  Sym* head;
-  struct Table* next; /* for scope stack */
-} Table;
+struct functionDetails{
+    string return_type;
+    int num_params;
+    vector<string> param_types;
+    unordered_map<string, struct variableDetails> symbol_table;
+};
 
-static Table* scope = NULL;
-static Table* alltabs[1024];
-static int tabc = 0;
-static int curr_offset = 0;
-static int offstack[1024], offsp=0;
+int has_return_stmt;
 
-static Table* push_scope(void){
-  Table* t = (Table*)calloc(1,sizeof(Table));
-  t->next = scope; scope = t;
-  alltabs[tabc++] = t;
-  offstack[offsp++] = curr_offset; curr_offset = 0;
-  return t;
-}
-static void pop_scope(void){
-  if(!scope) return;
-  scope = scope->next;
-  curr_offset = offstack[--offsp];
-}
-static Sym* lookup(const char* name){
-  for(Table* t=scope; t; t=t->next){
-    for(Sym* s=t->head; s; s=s->next)
-      if(strcmp(s->name,name)==0) return s;
-  }
-  return NULL;
-}
-static Sym* insert(const char* name, const char* type, int width){
-  Sym* prev = NULL;
-  for(Sym* s=scope->head; s; s=s->next)
-    if(strcmp(s->name,name)==0) return NULL; /* redecl in this scope */
-  Sym* s = (Sym*)calloc(1,sizeof(Sym));
-  s->name=strdup(name); s->type=strdup(type); s->width=width;
-  s->offset = curr_offset; curr_offset += width;
-  s->next = scope->head; scope->head = s;
-  return s;
-}
+unordered_map<string, struct functionDetails> func_table;
+string curr_func_name;
+vector<string> curr_func_param_type;
 
-/* ---------- type helpers ---------- */
+struct classDetails{
+    unordered_map<string, struct variableDetails> fields;
+    unordered_map<string, struct functionDetails> methods;
+    vector<string> field_order;
+    int lineNumber;
+};
 
-static int width_of(const char* t){
-  if(strcmp(t,"int")==0) return 4;
-  if(strcmp(t,"float")==0) return 4;
-  if(strcmp(t,"char")==0) return 1;
-  /* arrays like array(n,type): width = n*width(type). We keep it simple here. */
-  if(strncmp(t,"array(",6)==0){
-    int n=0; char base[64]; base[0]=0;
-    sscanf(t,"array(%d,%63[^)])",&n,base);
-    return n*width_of(base);
-  }
-  return 4;
-}
-static char* max_type(const char* a, const char* b){
-  if(strcmp(a,"float")==0 || strcmp(b,"float")==0) return "float";
-  return "int";
-}
-static char* widen(const char* v, const char* from, const char* to){
-  if(strcmp(from,to)==0) return (char*)v;
-  if(strcmp(from,"int")==0 && strcmp(to,"float")==0){
-    char* t=newtmp();
-    sprintf(code[code_i++], "%s = (float) %s\n", t, v);
-    return t;
-  }
-  return (char*)v; /* others omitted for brevity */
-}
+unordered_map<string, struct classDetails> class_table;
+string curr_class_name;
+bool in_class = false;
 
-/* ---------- temp holders ---------- */
+set<string> imported_libraries;
+map<string, set<string>> library_functions;
 
-static char decl_type[64]="";
-static char collected[256][64];
-static int  coln=0;
+struct LibraryFunction {
+    string library_name;
+    string func_name;
+    string return_type;
+    vector<string> param_types;
+    bool is_loaded;  // Whether 3AC is already generated
+    string temp_name; // temp used to represent a call emitted at load time
+    bool call_emitted; // whether a @call line was emitted when loading
+};
 
-static void print_tables(void){
-  printf("-------------- Symbol Tables --------------\n");
-  int k=1;
-  for(int i=0;i<tabc;i++){
-    Table* t = alltabs[i];
-    printf("\nTable %d\n", k++);
-    printf("+----------------+----------------+--------+\n");
-    printf("| Name           | Type           | Offset |\n");
-    printf("+----------------+----------------+--------+\n");
-    for(Sym* s=t->head; s; s=s->next)
-      printf("| %-14s | %-14s | %6d |\n", s->name, s->type, s->offset);
-    printf("+----------------+----------------+--------+\n");
-  }
-  printf("\n");
-}
+map<string, LibraryFunction> available_lib_functions;
+
 %}
 
-/* ---------- Bison declarations ---------- */
+%name parser
 
 %union{
-  char* s;
-  int   i;
-  struct Node* n;
-  struct List* list;
+    struct node { 
+        char lexeme[100];
+        int lineNumber;
+        char type[100];
+        char if_body[5];
+        char elif_body[5];
+		char else_body[5];
+        char loop_body[5];
+        char parentNext[5];
+        char case_body[5];
+        char id[5];
+        char temp[5];
+        int nParams;
+    } node;
 }
 
-%token <s> INT FLOAT CHAR IF ELSE WHILE T F
-%token <s> ID NUM
-%token <s> INC DEC PEQ MEQ SEQ DEQ
-%token <s> GTE LTE EE NE AND OR NOT GT LT
-%token <s> EQ PL MI ST DV MD
-%token <s> SC CM LP RP LB RB LS RS
+%token <node> INT FLOAT CHAR STRING 
+%token <node> VOID REPLY 
+%token <node> IF ELIF ELSE WHILE FOR BREAK CONTINUE SWITCH CASE DEFAULT
+%token <node> RESULT INPUT 
+%token <node> INT_LITERAL FLOAT_LITERAL ID
+%token <node> LE GE EQ NE GT LT AND OR NOT
+%token <node> ASSIGN ADD SUB MUL DIV MOD
+%token <node> BITAND BITOR BITXOR BITNOT LSHIFT RSHIFT
+%token <node> SEMICOLON COMMA COLON LBRACE RBRACE LPAR RPAR LBRACK RBRACK
+%token <node> STRING_LITERAL CHAR_LITERAL
+%token <node> FUNC ARROW
+%token <node> LOOP FROM TO STEP UNTIL
+%token <node> MATCH UNDERSCORE FATARROW
+%token <node> CLASS PUBLIC PRIVATE RECORD DOT
+%token <node> MAKE DISCARD HANDLE
+%token <node> IMPORT GLOBAL
 
-%type  <n> program stmt stmt_list expr assign control term
-%type  <s> type asop incdec optsign
-%type  <s> arrtail
-%type  <i> M N
+%type <node> Program Func FuncPrefix ParamList Param
+%type <node> StatementList Statement
+%type <node> DeclarationStatement
+%type <node> ReplyStatement
+%type <node> ArrValues
+%type <node> DataTypeG FuncDataType
+%type <node> EXPRESSION PrimaryExpression UnaryExpression UnaryOperator
+%type <node> Literal
+%type <node> AssignmentStatement
+%type <node> IFStatement ELSEIFStatement ELSEStatement
+%type <node> SWITCHStatement CASEStatement CASEStatementList
+%type <node> WHILEStatement FORStatement
+%type <node> BREAKStatement CONTINUEStatement
+%type <node> INPUTStatement RESULTStatement
+%type <node> PostfixExpression
+%type <node> FuncCall ArgList Arg
+%type <node> LOOPWHILEStatement LOOPUNTILStatement LOOPFROMStatement StepClause
+%type <node> MatchStatement PatternArmList PatternArm Pattern
+%type <node> ClassDecl CLASSBody ClassMemberList ClassMember Visibility FieldDecl MethodDecl
 
+%right ASSIGN
 %left OR
 %left AND
-%nonassoc EE NE
-%left GTE LTE GT LT
-%right NOT
-%left PL MI
-%left ST DV MD
-%nonassoc INC DEC
-%nonassoc ELSE
+%left BITOR
+%left BITXOR
+%left BITAND
+%left EQ NE
+%left LE GE LT GT
+%left LSHIFT RSHIFT
+%left ADD SUB
+%left MUL DIV MOD
+%left BITNOT
 
 %%
 
-program
-  : { push_scope(); } stmt_list
-    {
-      backpatch($2->nlist, code_i);
-      print_tables();
-      printf("----- Intermediate Code -----\n\n");
-      for(int i=0;i<code_i;i++) printf("%3d:\t%s", i, code[i]);
-      printf("\n");
-    }
-  ;
+// Program:   
+//     FuncList {  }
+//     ;
+ 
+// FuncList:   
+//     FuncList Func {  }
+//     | /* epsilon */ {  }
+//     ;
 
-stmt_list
-  : stmt_list M stmt
-    {
-      backpatch($1->nlist, $2);
-      Node* r = (Node*)calloc(1,sizeof(Node));
-      r->nlist = $3->nlist;
-      $$ = r;
-    }
-  | stmt
-    {
-      Node* r = (Node*)calloc(1,sizeof(Node));
-      r->nlist = $1->nlist;
-      $$ = r;
-    }
-  ;
+Program:
+    DeclList {  }
+    ;
 
-stmt
-  : assign SC       { $$ = $1; }
-  | control         { $$ = $1; }
-  | type decllist SC
-    {
-      /* insert collected identifiers with decl_type */
-      for(int i=0;i<coln;i++){
-        if(!insert(collected[i], decl_type, width_of(decl_type))){
-          fprintf(stderr,"Rejected - redeclaration of '%s'\n", collected[i]);
+DeclList:
+    DeclList TopDecl {  }
+    | /* epsilon */ {  }
+    ;
+
+TopDecl:
+    Func {  }
+    | ClassDecl {  }
+    | RecordDecl {  }
+    | ImportStatement {  }
+    ;
+
+ImportStatement:
+    IMPORT ID SEMICOLON {
+        string lib_name = string($2.lexeme);
+        
+        if(library_functions.find(lib_name) == library_functions.end()) {
+            errorBuffer.push_back("Error: Library '" + lib_name + "' not found");
+        } else {
+            imported_libraries.insert(lib_name);
+            tac.push_back("# Imported library: " + lib_name);
+            
+            // Optionally parse the .rcblib file here and generate 3AC
+            // For now, we'll do lazy loading on first function call
         }
-      }
-      coln=0; decl_type[0]=0;
-      Node* r=(Node*)calloc(1,sizeof(Node)); $$=r;
     }
-  | LB { push_scope(); } stmt_list RB
-    {
-      pop_scope();
-      Node* r=(Node*)calloc(1,sizeof(Node));
-      r->nlist = $3->nlist; $$=r;
+    | FROM ID IMPORT ID SEMICOLON {
+        string lib_name = string($2.lexeme);
+        string func_name = string($4.lexeme);
+        
+        if(library_functions.find(lib_name) == library_functions.end()) {
+            errorBuffer.push_back("Error: Library '" + lib_name + "' not found");
+        } else if(library_functions[lib_name].find(func_name) == library_functions[lib_name].end()) {
+            errorBuffer.push_back("Error: Function '" + func_name + "' not in library '" + lib_name + "'");
+        } else {
+            imported_libraries.insert(lib_name);
+            tac.push_back("# Imported " + func_name + " from " + lib_name);
+        }
     }
-  | SC { Node* r=(Node*)calloc(1,sizeof(Node)); $$=r; }
-  ;
+    ;
 
-type
-  : INT    { strcpy(decl_type,"int");   $$=$1; }
-  | FLOAT  { strcpy(decl_type,"float"); $$=$1; }
-  | CHAR   { strcpy(decl_type,"char");  $$=$1; }
-  ;
-
-decllist
-  : decllist CM ID arrtail optinit
-    { strcpy(collected[coln++], $3); /* arrays handled in optinit */ }
-  | ID arrtail optinit
-    { strcpy(collected[coln++], $1); }
-  ;
-
-arrtail
-  : /* empty */     { $$=""; }
-  | LS NUM RS arrtail
-    {
-      /* fold: array(n, decl_type...) */
-      static char tmp[64];
-      if($4 && $4[0])
-        snprintf(tmp,sizeof(tmp),"array(%d,%s)", atoi($2), $4);
-      else
-        snprintf(tmp,sizeof(tmp),"array(%d,%s)", atoi($2), decl_type);
-      strcpy(decl_type, tmp);
-      $$ = decl_type;
+ClassDecl:
+    CLASS ID {
+        if(class_table.find(string($2.lexeme)) != class_table.end()){
+            errorBuffer.push_back("Error: Duplicate class name - " + string($2.lexeme));
+        }
+        curr_class_name = string($2.lexeme);
+        in_class = true;
+        tac.push_back("class " + curr_class_name);
+    } LBRACE CLASSBody RBRACE {
+        tac.push_back("endclass " + curr_class_name);
+        curr_class_name = "";
+        in_class = false;
     }
-  ;
+    ;
 
-optinit
-  : /* empty */
-  | EQ expr
-    {
-      /* generate assign after declaration */
-      char* t = newtmp();
-      if(strcmp(decl_type,$2->type)!=0){
-        sprintf(code[code_i++], "%s = (%s) %s\n", t, decl_type, $2->val);
-        sprintf(code[code_i++], "%s = %s\n", collected[coln-1], t);
-      }else{
-        sprintf(code[code_i++], "%s = %s\n", collected[coln-1], $2->val);
-      }
-    }
-  ;
+CLASSBody:
+    ClassMemberList {  }
+    ;
 
-/* -------- control flow ---------- */
+ClassMemberList:
+    ClassMemberList ClassMember {  }
+    | /* epsilon */ {  }
+    ;
 
-control
-  : IF LP expr RP M stmt ELSE N M stmt
-    {
-      backpatch($3->tlist, $5);
-      backpatch($3->flist, $9);
-      Node* r=(Node*)calloc(1,sizeof(Node));
-      r->nlist = merge( merge($6->nlist, mklist($8)), $10->nlist );
-      $$=r;
-    }
-  | IF LP expr RP M stmt
-    {
-      backpatch($3->tlist, $5);
-      Node* r=(Node*)calloc(1,sizeof(Node));
-      r->nlist = merge($3->flist, $6->nlist);
-      $$=r;
-    }
-  | WHILE M LP expr RP M stmt
-    {
-      backpatch($7->nlist, $2);
-      backpatch($4->tlist, $6);
-      sprintf(code[code_i++], "goto %d\n", $2);
-      Node* r=(Node*)calloc(1,sizeof(Node));
-      r->nlist = $4->flist; $$=r;
-    }
-  ;
+ClassMember:
+    Visibility FieldDecl {  }
+    | Visibility MethodDecl {  }
+    | FieldDecl {  }  // default private
+    | MethodDecl {  }  // default private
+    ;
 
-M : { $$ = code_i; }
-  ;
+Visibility:
+    PUBLIC { strcpy($$.lexeme, "public"); }
+    | PRIVATE { strcpy($$.lexeme, "private"); }
+    ;
 
-N : { $$ = code_i; sprintf(code[code_i++],"goto "); }
-  ;
+FieldDecl:
+    ID COLON DataTypeG SEMICOLON {
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word");
+        }
+        
+        variableDetails vd;
+        vd.dataTypes = string($3.type);
+        vd.scope = 0; // class scope
+        vd.size = 0;
+        vd.isArray = 0;
+        vd.lineNumber = countn+1;
+        
+        class_table[curr_class_name].fields[string($1.lexeme)] = vd;
+        class_table[curr_class_name].field_order.push_back(string($1.lexeme));
+        
+        tac.push_back("- field " + string($3.type) + " " + string($1.lexeme));
+    }
+    | ID COLON DataTypeG LBRACK INT_LITERAL RBRACK SEMICOLON { // NEW: RCBScript array syntax
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word");
+        }
+        
+        variableDetails vd;
+        vd.dataTypes = string($3.type);
+        vd.scope = 0; // class scope
+        vd.size = stoi(string($5.lexeme));
+        vd.isArray = 1;
+        vd.lineNumber = countn+1;
+        
+        class_table[curr_class_name].fields[string($1.lexeme)] = vd;
+        class_table[curr_class_name].field_order.push_back(string($1.lexeme));
+        
+        tac.push_back("- field " + string($3.type) + " " + string($1.lexeme) + " [ " + string($5.lexeme) + " ] ");
+    }
+    ;
 
-/* -------- assignments & expressions ---------- */
+MethodDecl:
+    FUNC ID {
+        string method_name = curr_class_name + "::" + string($2.lexeme);
+        if(class_table[curr_class_name].methods.find(string($2.lexeme)) != 
+           class_table[curr_class_name].methods.end()){
+            errorBuffer.push_back("Error: Duplicate method name - " + string($2.lexeme));
+        }
+        tac.push_back(method_name + ":"); 
+        curr_func_name = method_name;
+    } LPAR ParamList RPAR {
+        class_table[curr_class_name].methods[string($2.lexeme)].num_params = $5.nParams;
+    } ARROW FuncDataType LBRACE {
+        has_return_stmt = 0;
+        scope_history.push(++scope_counter);
+        class_table[curr_class_name].methods[string($2.lexeme)].return_type = string($8.type);
+    } StatementList RBRACE {
+        if(string($8.type) != "void" && has_return_stmt == 0){
+            errorBuffer.push_back("Return Statement not there for method: " + string($2.lexeme));
+        }
+        scope_history.pop();
+        --scope_counter;
+        tac.push_back("end " + curr_func_name);
+        has_return_stmt = 0;
+    }
+    ;
 
-assign
-  : expr asop expr
-    {
-      /* lvalue check: forbid const on left */
-      char* endp=NULL; strtod($1->val,&endp);
-      if(endp && *endp=='\0'){
-        fprintf(stderr,"Rejected - cannot assign to constant\n");
-      }
-      char* rhs = $3->val;
-      if(strcmp($1->type,$3->type)!=0){
-        char* t=newtmp();
-        sprintf(code[code_i++], "%s = (%s) %s\n", t, $1->type, $3->val);
-        rhs=t;
-      }
-      if(strlen($2)>1){ /* +=, -=, ... */
-        char* t=newtmp();
-        sprintf(code[code_i++], "%s = %s %c %s\n", t, $1->val, $2[0], rhs);
-        sprintf(code[code_i++], "%s = %s\n", $1->val, t);
-      }else{
-        sprintf(code[code_i++], "%s = %s\n", $1->val, rhs);
-      }
-      Node* r=(Node*)calloc(1,sizeof(Node)); $$=r;
+RecordDecl:
+    RECORD ID {
+        if(class_table.find(string($2.lexeme)) != class_table.end()){
+            errorBuffer.push_back("Error: Duplicate record name - " + string($2.lexeme));
+        }
+        curr_class_name = string($2.lexeme);
+        tac.push_back("record " + curr_class_name);
+    } LBRACE RecordFieldList RBRACE {
+        tac.push_back("endrecord " + curr_class_name);
+        curr_class_name = "";
     }
-  ;
+    ;
 
-asop
-  : EQ  { $$=$1; }
-  | PEQ { $$=$1; }
-  | MEQ { $$=$1; }
-  | SEQ { $$=$1; }
-  | DEQ { $$=$1; }
-  ;
+RecordFieldList:
+    RecordFieldList RecordField {  }
+    | RecordField {  }
+    ;
 
-expr
-  : expr PL expr
-    {
-      char* t=max_type($1->type,$3->type);
-      char* a=widen($1->val,$1->type,t);
-      char* b=widen($3->val,$3->type,t);
-      char* r=newtmp();
-      sprintf(code[code_i++], "%s = %s + %s\n", r,a,b);
-      Node* n=(Node*)calloc(1,sizeof(Node));
-      strcpy(n->val,r); strcpy(n->type,t); $$=n;
+RecordField:
+    ID COLON DataTypeG SEMICOLON {
+        variableDetails vd;
+        vd.dataTypes = string($3.type);
+        vd.scope = 0;
+        vd.size = 0;
+        vd.isArray = 0;
+        vd.lineNumber = countn+1;
+        
+        class_table[curr_class_name].fields[string($1.lexeme)] = vd;
+        class_table[curr_class_name].field_order.push_back(string($1.lexeme));
+        
+        tac.push_back("- field " + string($3.type) + " " + string($1.lexeme));
     }
-  | expr MI expr
-    {
-      char* t=max_type($1->type,$3->type);
-      char* a=widen($1->val,$1->type,t);
-      char* b=widen($3->val,$3->type,t);
-      char* r=newtmp();
-      sprintf(code[code_i++], "%s = %s - %s\n", r,a,b);
-      Node* n=(Node*)calloc(1,sizeof(Node));
-      strcpy(n->val,r); strcpy(n->type,t); $$=n;
+    ;
+
+Func:   
+    FuncPrefix LBRACE {
+        has_return_stmt = 0;
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE {
+        if(func_table[curr_func_name].return_type != "void" && has_return_stmt == 0){
+            errorBuffer.push_back("Return Statement not there for function: " + curr_func_name);
+        }
+        scope_history.pop();
+        --scope_counter;
+        tac.push_back("end:\n");
+        has_return_stmt = 0;
     }
-  | expr ST expr
-    {
-      char* t=max_type($1->type,$3->type);
-      char* a=widen($1->val,$1->type,t);
-      char* b=widen($3->val,$3->type,t);
-      char* r=newtmp();
-      sprintf(code[code_i++], "%s = %s * %s\n", r,a,b);
-      Node* n=(Node*)calloc(1,sizeof(Node));
-      strcpy(n->val,r); strcpy(n->type,t); $$=n;
+    ;
+ 
+FuncPrefix:
+    FUNC ID {   
+        if(func_table.find(string($2.lexeme)) != func_table.end()){
+            errorBuffer.push_back("Error: Duplicate function name - " + string($2.lexeme));
+        }
+        // func_table[curr_func_name] = {string($1.type), 0, {}, {} , countn};
+        tac.push_back(string($2.lexeme) + ": " + string($1.type)); 
+        curr_func_name = string($2.lexeme);
+    } LPAR ParamList RPAR {
+        func_table[curr_func_name].return_type = string($1.type);
+        func_table[curr_func_name].num_params = $5.nParams;
+        // curr_func_param_type.clear();
+    } ARROW FuncDataType
+    ;
+
+FuncDataType:
+    DataTypeG { strcpy($$.type, $1.type); }
+    | VOID { sprintf($$.type, "void"); }
+    ;
+ 
+ParamList:
+    Param {
+        func_table[curr_func_name].param_types.push_back(string($1.type));
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { string($1.type), scope_counter+1, 0, 0, countn+1 };
+        tac.push_back("- Arg " + string($1.type) + " " + string($1.lexeme));                       
+    } COMMA ParamList {
+        $$.nParams = $4.nParams + 1;
     }
-  | expr DV expr
-    {
-      char* t=max_type($1->type,$3->type);
-      char* a=widen($1->val,$1->type,t);
-      char* b=widen($3->val,$3->type,t);
-      char* r=newtmp();
-      sprintf(code[code_i++], "%s = %s / %s\n", r,a,b);
-      Node* n=(Node*)calloc(1,sizeof(Node));
-      strcpy(n->val,r); strcpy(n->type,t); $$=n;
+    | Param {
+        $$.nParams = 1;
+        func_table[curr_func_name].param_types.push_back(string($1.type));
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { string($1.type), scope_counter+1, 0, 0, countn+1 };
+        tac.push_back("- Arg " + string($1.type) + " " + string($1.lexeme));
     }
-  | expr MD expr
-    {
-      char* t=max_type($1->type,$3->type);
-      char* a=widen($1->val,$1->type,t);
-      char* b=widen($3->val,$3->type,t);
-      char* r=newtmp();
-      sprintf(code[code_i++], "%s = %s %% %s\n", r,a,b);
-      Node* n=(Node*)calloc(1,sizeof(Node));
-      strcpy(n->val,r); strcpy(n->type,t); $$=n;
+    | /* epsilon */ { $$.nParams = 0; }
+    ;
+ 
+Param:
+    DataTypeG ID {
+        $$.nParams = 1;
+        strcpy($$.type, $1.type);
+        strcpy($$.lexeme, $2.lexeme);                    
+    }
+    ;
+ 
+StatementList:
+    Statement StatementList {  }
+    | /* epsilon */ {  }
+    ;
+ 
+Statement:   
+    DeclarationStatement {  }
+    | AssignmentStatement SEMICOLON {  }
+    | EXPRESSION SEMICOLON {  }
+    | ReplyStatement SEMICOLON {  } 
+    | IFStatement {  }
+    | WHILEStatement {  }
+    | FORStatement {  }
+    | LOOPWHILEStatement {  }
+    | LOOPFROMStatement {  }
+    | LOOPUNTILStatement {  }
+    | MatchStatement {  }
+    | BREAKStatement {  }
+    | CONTINUEStatement {  }    
+    | SWITCHStatement {  }
+    | INPUTStatement {  }
+    | RESULTStatement {  }
+    | DISCARDStatement {  }
+    | HANDLEStatement {  }
+    ;
+
+DeclarationStatement:
+    ID COLON DataTypeG SEMICOLON { 
+        // is_reserved_word(string($1.lexeme));
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
+        }
+        // if(multiple_declaration(string($2.lexeme))){
+        //     check_scope(string($2.lexeme));
+        // };
+        tac.push_back("- " + string($3.type) + " " + string($1.lexeme));
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { string($3.type), scope_counter, 0, 0, countn+1 };
+    }
+    | ID COLON STRING ASSIGN STRING_LITERAL SEMICOLON {
+        // is_reserved_word(string($1.lexeme));
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
+        }
+        multiple_declaration(string($1.lexeme));
+        tac.push_back("- STRING_LITERAL " + string($1.lexeme));
+        tac.push_back(string($1.lexeme) + " = " + string($5.lexeme) + " STRING_LITERAL");
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { "STRING_LITERAL", scope_counter, string($5.lexeme).length(), 0, countn+1 };
+    }
+    | ID COLON DataTypeG ASSIGN EXPRESSION SEMICOLON {
+        // is_reserved_word(string($1.lexeme));
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
+        }
+        //multiple_declaration(string($2.lexeme));
+        check_type(string($3.type), string($5.type));
+        tac.push_back("- " + string($3.type) + " " + string($1.lexeme));
+        tac.push_back(string($1.lexeme) + " = " + string($5.lexeme) + " " + string($3.type));
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { string($3.type), scope_counter, 0, 0, countn+1 };
+
+        if(const_temps.find(string($5.lexeme)) == const_temps.end() && $5.lexeme[0] == '@') free_temp.push(string($5.lexeme));
+    }
+    /* | DataTypeG ID LBRACK INT_LITERAL RBRACK SEMICOLON {
+        // is_reserved_word(string($2.lexeme));
+        if(is_reserved_word(string($2.lexeme))){
+            errorBuffer.push_back("Error: '" + string($2.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
+        }
+        multiple_declaration(string($2.lexeme));
+        tac.push_back("- " + string($1.type) + " " + string($2.lexeme) + " [ " + string($4.lexeme) + " ] ");
+        func_table[curr_func_name].symbol_table[string($2.lexeme)] = { string($1.type), scope_counter, stoi(string($4.lexeme)), 1, countn+1 };
+    }
+    | DataTypeG ID LBRACK INT_LITERAL RBRACK ASSIGN {
+        // is_reserved_word(string($2.lexeme));
+        if(is_reserved_word(string($2.lexeme))){
+            errorBuffer.push_back("Error: '" + string($2.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
+        }
+        multiple_declaration(string($2.lexeme));
+        tac.push_back("- " + string($1.type) + " " + string($2.lexeme) + " [ " + string($4.lexeme) + " ] ");
+        func_table[curr_func_name].symbol_table[string($2.lexeme)] = { string($1.type), scope_counter, stoi(string($4.lexeme)), 1, countn+1 };
+        curr_array = string($2.lexeme);
+    } LBRACE ArrValues RBRACE SEMICOLON // array size must be a positive integer  */
+    | ID COLON DataTypeG LBRACK INT_LITERAL RBRACK SEMICOLON { // NEW: RCBScript array syntax
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
+        }
+        multiple_declaration(string($1.lexeme));
+        tac.push_back("- " + string($3.type) + " " + string($1.lexeme) + " [ " + string($5.lexeme) + " ] ");
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { string($3.type), scope_counter, stoi(string($5.lexeme)), 1, countn+1 };
+    }
+    | ID COLON DataTypeG LBRACK INT_LITERAL RBRACK ASSIGN {    // NEW: RCBScript array with init
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
+        }
+        multiple_declaration(string($1.lexeme));
+        tac.push_back("- " + string($3.type) + " " + string($1.lexeme) + " [ " + string($5.lexeme) + " ] ");
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { string($3.type), scope_counter, stoi(string($5.lexeme)), 1, countn+1 };
+        curr_array = string($1.lexeme);
+    } LBRACE ArrValues RBRACE SEMICOLON
+    | ID COLON ID ASSIGN MAKE ID SEMICOLON {
+        // Object creation: obj:ClassName = make ClassName;
+        if(class_table.find(string($6.lexeme)) == class_table.end()){
+            errorBuffer.push_back("Error: Class '" + string($6.lexeme) + "' not declared");
+        }
+        if(string($3.lexeme) != string($6.lexeme)){
+            errorBuffer.push_back("Error: Type mismatch in object creation");
+        }
+        
+        tac.push_back("- " + string($3.lexeme) + " " + string($1.lexeme));
+        tac.push_back(string($1.lexeme) + " = make " + string($6.lexeme));
+        
+        variableDetails vd;
+        vd.dataTypes = string($3.lexeme);
+        vd.scope = scope_counter;
+        vd.size = 0;
+        vd.isArray = 0;
+        vd.lineNumber = countn+1;
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = vd;
+    }
+    ;
+
+DISCARDStatement:
+    DISCARD ID SEMICOLON {
+        if(check_declaration(string($2.lexeme))){
+            string var_type = func_table[curr_func_name].symbol_table[string($2.lexeme)].dataTypes;
+            // Check if it's a handle or object type
+            if(var_type.find("HANDLE") != string::npos || class_table.find(var_type) != class_table.end()){
+                tac.push_back("discard " + string($2.lexeme) + " " + var_type);
+            } else {
+                errorBuffer.push_back("Error: discard can only be used on handles or objects at line " + to_string(countn+1));
+            }
+        }
+    }
+    ;
+
+HANDLEStatement:
+    ID COLON HANDLE LT DataTypeG GT SEMICOLON {
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word");
+        }
+        char temp_type[100];
+        sprintf(temp_type, "HANDLE[%s]", $5.type);
+        tac.push_back("- " + string(temp_type) + " " + string($1.lexeme));
+        
+        variableDetails vd;
+        vd.dataTypes = string(temp_type);
+        vd.scope = scope_counter;
+        vd.size = 0;
+        vd.isArray = 0;
+        vd.lineNumber = countn+1;
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = vd;
+    }
+    | ID COLON HANDLE LT DataTypeG GT ASSIGN MAKE HANDLE LT DataTypeG GT SEMICOLON {
+        if(is_reserved_word(string($1.lexeme))){
+            errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word");
+        }
+        char temp_type[100];
+        sprintf(temp_type, "HANDLE[%s]", $5.type);
+        tac.push_back("- " + string(temp_type) + " " + string($1.lexeme));
+        tac.push_back(string($1.lexeme) + " = make " + string(temp_type));
+        
+        variableDetails vd;
+        vd.dataTypes = string(temp_type);
+        vd.scope = scope_counter;
+        vd.size = 0;
+        vd.isArray = 0;
+        vd.lineNumber = countn+1;
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = vd;
+    }
+    ;
+
+ArrValues:   
+    Literal {
+        check_type(func_table[curr_func_name].symbol_table[curr_array].dataTypes, string($1.type));
+        tac.push_back(curr_array + " [ " + to_string(arr_index++) + " ] = " + string($1.lexeme) + " " + func_table[curr_func_name].symbol_table[curr_array].dataTypes);
+        if(arr_index > func_table[curr_func_name].symbol_table[curr_array].size){
+            errorBuffer.push_back("Line no: " + to_string(func_table[curr_func_name].symbol_table[curr_array].lineNumber) + "error: too many initializers for ‘array [" + to_string(func_table[curr_func_name].symbol_table[curr_array].size) + "]’");
+        }
+    } COMMA ArrValues
+    | Literal {
+        check_type(func_table[curr_func_name].symbol_table[curr_array].dataTypes, string($1.type));
+        tac.push_back(curr_array + " [ " + to_string(arr_index++) + " ] = " + string($1.lexeme) + " " + func_table[curr_func_name].symbol_table[curr_array].dataTypes);
+        if(arr_index > func_table[curr_func_name].symbol_table[curr_array].size){
+            errorBuffer.push_back("Line no: " + to_string(func_table[curr_func_name].symbol_table[curr_array].lineNumber) + "error: too many initializers for ‘array [" + to_string(func_table[curr_func_name].symbol_table[curr_array].size) + "]’");
+        }
+        arr_index=0;
+    }
+    ;
+                   
+ReplyStatement:
+    REPLY EXPRESSION {
+        check_type(func_table[curr_func_name].return_type, string($2.type));
+        tac.push_back("return " + string($2.lexeme) + " " + func_table[curr_func_name].return_type);
+        has_return_stmt = 1;
+        if(const_temps.find(string($2.lexeme)) == const_temps.end() && $2.lexeme[0] == '@') free_temp.push(string($2.lexeme));
+    }  
+    ;
+
+DataTypeG:   
+    INT { strcpy($$.type, "INT"); }
+    | FLOAT { strcpy($$.type, "FLOAT"); }
+    | CHAR { strcpy($$.type, "CHAR"); }
+    ;
+
+EXPRESSION:
+    EXPRESSION ADD EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION SUB EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION MUL EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string t0=get_temp();
+        string t1=get_temp();
+        string t2=get_temp();
+        string a = string($$.lexeme);
+        string b = string($1.lexeme);
+        string c = string($3.lexeme);
+        string dtype = string($$.type);
+        
+        tac.push_back(a + " = 0 " + dtype);
+        tac.push_back(t0 + " = 0 " + dtype);
+        tac.push_back(t2 + " = 1 " + dtype);
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(t1 + " = " + t0 + " < " + c +  "  " + dtype);
+        tac.push_back("if " + t1 + " GOTO " + "#L" + to_string(labelCount+1) + " else GOTO " + "#L" + to_string(labelCount+2));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(a + " = " + a + " + " + b +  "  " + dtype);
+        tac.push_back(t0 + " = " + t0 + " + " + t2 +  "  " + dtype);
+        tac.push_back("GOTO #L" + to_string(labelCount-1));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+
+        free_temp.push(t0);
+        free_temp.push(t1);
+        free_temp.push(t2);
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+
+        labelCount++;
+    }
+    | EXPRESSION DIV EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string t0=get_temp();
+        string t1=get_temp();
+        string t2=get_temp();
+        string a = string($$.lexeme);
+        string b = string($1.lexeme);
+        string c = string($3.lexeme);
+        string dtype = string($$.type);
+        
+        tac.push_back(a + " = 0 " + dtype);
+        tac.push_back(t0 + " = " + b + " " + dtype);
+        tac.push_back(t2 + " = 1 " + dtype);
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(t1 + " = " + t0 + " >= " + c +  "  " + dtype);
+        tac.push_back("if " + t1 + " GOTO " + "#L" + to_string(labelCount+1) + " else GOTO " + "#L" + to_string(labelCount+2));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(a + " = " + a + " + " + t2 +  "  " + dtype);
+        tac.push_back(t0 + " = " + t0 + " - " + c +  "  " + dtype);
+        tac.push_back("GOTO #L" + to_string(labelCount-1));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+
+        free_temp.push(t0);
+        free_temp.push(t1);
+        free_temp.push(t2);
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+
+        labelCount++;
+    }
+    | EXPRESSION LE EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION GE EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION LT EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION GT EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION EQ EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION NE EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string temp = get_temp();
+        tac.push_back(temp + " = " + string($1.lexeme) + " == " + string($3.lexeme) + " " + string($$.type));
+        tac.push_back(string($$.lexeme) + " = ~ " + temp + " " + string($$.type)); 
+
+        free_temp.push(temp);
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION AND EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string l0 = "#L" + to_string(++labelCount);
+        string l1 = "#L" + to_string(++labelCount);
+        string l2 = "#L" + to_string(++labelCount);
+        string l3 = "#L" + to_string(++labelCount);
+        string dtype = string($$.type);
+
+        tac.push_back("if " + string($1.lexeme) + " GOTO " + l3 + " else GOTO " + l1);
+        tac.push_back(l3 + ":");
+        tac.push_back("if " + string($3.lexeme) + " GOTO " + l0 + " else GOTO " + l1);
+        tac.push_back(l0 + ":");
+        tac.push_back(string($$.lexeme) + " = 1 " + dtype);
+        tac.push_back("GOTO " + l2);
+        tac.push_back(l1 + ":");
+        tac.push_back(string($$.lexeme) + " = 0 " + dtype);
+        tac.push_back(l2 + ":");
+
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+
+        labelCount++;
+    }
+    | EXPRESSION OR EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string l0 = "#L" + to_string(++labelCount);
+        string l1 = "#L" + to_string(++labelCount);
+        string l2 = "#L" + to_string(++labelCount);
+        string l3 = "#L" + to_string(++labelCount);
+        string dtype = string($$.type);
+
+        tac.push_back("if " + string($1.lexeme) + " GOTO " + l0 + " else GOTO " + l3);
+        tac.push_back(l3 + ":");
+        tac.push_back("if " + string($3.lexeme) + " GOTO " + l0 + " else GOTO " + l1);
+        tac.push_back(l0 + ":");
+        tac.push_back(string($$.lexeme) + " = 1 " + dtype);
+        tac.push_back("GOTO " + l2);
+        tac.push_back(l1 + ":");
+        tac.push_back(string($$.lexeme) + " = 0 " + dtype);
+        tac.push_back(l2 + ":");
+
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+
+        labelCount++;
+    }
+    | EXPRESSION MOD EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string t0=get_temp();
+        string t1=get_temp();
+        string t2=get_temp();
+        string a = string($$.lexeme);
+        string b = string($1.lexeme);
+        string c = string($3.lexeme);
+        string dtype = string($$.type);
+        
+        tac.push_back(a + " = 0 " + dtype);
+        tac.push_back(t0 + " = " + b + " " + dtype);
+        tac.push_back(t2 + " = 1 " + dtype);
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(t1 + " = " + t0 + " >= " + c +  "  " + dtype);
+        tac.push_back("if " + t1 + " GOTO " + "#L" + to_string(labelCount+1) + " else GOTO " + "#L" + to_string(labelCount+2));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(t0 + " = " + t0 + " - " + c +  "  " + dtype);
+        tac.push_back("GOTO #L" + to_string(labelCount-1));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(a + " = " + t0 +  "  " + dtype);
+
+        free_temp.push(t0);
+        free_temp.push(t1);
+        free_temp.push(t2);
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+
+        labelCount++;
+    }
+    | EXPRESSION BITAND EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION BITOR EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($3.lexeme) + " " + string($$.type));
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | EXPRESSION BITXOR EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string a = string($$.lexeme);
+        string b = string($1.lexeme);
+        string b_= get_temp();
+        string c = string($3.lexeme);
+        string c_= get_temp();
+
+        tac.push_back(b_ + " = ~ " + b + " " + string($1.type));
+        tac.push_back(c_ + " = ~ " + c + " " + string($3.type));
+        string t1=get_temp();
+        string t2=get_temp();
+        tac.push_back(t1 + " = " + b + " & " + c_ + " " + string($$.type));
+        tac.push_back(t2 + " = " + b_ + " & " + c + " " + string($$.type));
+        tac.push_back(a + " = " + t1 + " | " + t2 + " " + string($$.type));
+
+        free_temp.push(b_);
+        free_temp.push(c_);
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+
+        labelCount++;
+    }
+    | EXPRESSION LSHIFT EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string d = string($3.lexeme);
+        string t3 = get_temp();
+        string t4 = get_temp();
+        string l0 = "#L" + to_string(++labelCount);
+        string l1 = "#L" + to_string(++labelCount);
+        string l2 = "#L" + to_string(++labelCount);
+
+        string t0= get_temp();
+        string t1= get_temp();
+        string t2= get_temp();
+        string a = string($$.lexeme);
+        string b = string($1.lexeme);
+        string c = get_temp();
+        tac.push_back(c + " = 2 INT");
+        string dtype = string($$.type);
+        
+        tac.push_back(t3 + " = 0 INT");
+        tac.push_back(l2 + ":");
+        tac.push_back(t4 + " = " + t3 + " < " + d + " INT");
+        tac.push_back("\nif " + t4 + " GOTO " + l0 + " else GOTO " + l1);
+        tac.push_back(l0 + ":");
+        tac.push_back(a + " = 0 " + dtype);
+        tac.push_back(t0 + " = 0 " + dtype);
+        tac.push_back(t2 + " = 1 " + dtype);
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(t1 + " = " + t0 + " < " + c +  "  " + dtype);
+        tac.push_back("if " + t1 + " GOTO " + "#L" + to_string(labelCount+1) + " else GOTO " + "#L" + to_string(labelCount+2));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(a + " = " + a + " + " + b +  "  " + dtype);
+        tac.push_back(t0 + " = " + t0 + " + " + t2 +  "  " + dtype);
+        tac.push_back("GOTO #L" + to_string(labelCount-1));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back("GOTO " + l2);
+        tac.push_back(l1 + ":");
+
+        free_temp.push(t0);
+        free_temp.push(t1);
+        free_temp.push(t2);
+        free_temp.push(t3);
+        free_temp.push(t4);
+        free_temp.push(c);
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+
+        labelCount++;
+    }
+    | EXPRESSION RSHIFT EXPRESSION {
+        add_tac($$, $1, $2, $3)
+        string d = string($3.lexeme);
+        string t3 = get_temp();
+        string t4 = get_temp();
+        string l0 = "#L" + to_string(++labelCount);
+        string l1 = "#L" + to_string(++labelCount);
+        string l2 = "#L" + to_string(++labelCount);
+
+        string t0=get_temp();
+        string t1=get_temp();
+        string t2=get_temp();
+        string a = string($$.lexeme);
+        string b = string($1.lexeme);
+        string c = get_temp();
+        tac.push_back(c + " = 2 INT");
+        string dtype = string($$.type);
+        
+        tac.push_back(t3 + " = 0 INT");
+        tac.push_back(l2 + ":");
+        tac.push_back(t4 + " = " + t3 + " < " + d + " INT");
+        tac.push_back("\nif " + t4 + " GOTO " + l0 + " else GOTO " + l1);
+        tac.push_back(l0 + ":");
+        tac.push_back(a + " = 0 " + dtype);
+        tac.push_back(t0 + " = " + b + " " + dtype);
+        tac.push_back(t2 + " = 1 " + dtype);
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(t1 + " = " + t0 + " >= " + c +  "  " + dtype);
+        tac.push_back("if " + t1 + " GOTO " + "#L" + to_string(labelCount+1) + " else GOTO " + "#L" + to_string(labelCount+2));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back(a + " = " + a + " + " + t2 +  "  " + dtype);
+        tac.push_back(t0 + " = " + t0 + " - " + c +  "  " + dtype);
+        tac.push_back("GOTO #L" + to_string(labelCount-1));
+        tac.push_back("#L" + to_string(++labelCount) + ":");
+        tac.push_back("GOTO " + l2);
+        tac.push_back(l1 + ":");
+
+        free_temp.push(t0);
+        free_temp.push(t1);
+        free_temp.push(t2);
+        free_temp.push(t3);
+        free_temp.push(t4);
+        free_temp.push(c);
+        if(const_temps.find(string($1.lexeme)) == const_temps.end() && $1.lexeme[0] == '@') free_temp.push(string($1.lexeme));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+
+        labelCount++;
+    }
+    | UnaryExpression {
+        strcpy($$.type, $1.type);
+        strcpy($$.type, $1.type);
+        sprintf($$.lexeme, "%s", $1.lexeme);
+    }
+    | PrimaryExpression {
+        strcpy($$.type, $1.type);
+        strcpy($$.type, $1.type);
+        strcpy($$.lexeme, $1.lexeme);
+    }
+    | PostfixExpression {
+        strcpy($$.type, $1.type);
+        sprintf($$.lexeme, "%s", $1.lexeme);
     }
 
-  /* relational -> boolean lists */
-  | expr GTE expr { Node* n=calloc(1,sizeof(Node));
-      sprintf(code[code_i++],"if %s >= %s goto ", $1->val,$3->val);
-      sprintf(code[code_i++],"goto ");
-      n->tlist = mklist(code_i-2); n->flist = mklist(code_i-1); $$=n; }
-  | expr LTE expr { Node* n=calloc(1,sizeof(Node));
-      sprintf(code[code_i++],"if %s <= %s goto ", $1->val,$3->val);
-      sprintf(code[code_i++],"goto ");
-      n->tlist = mklist(code_i-2); n->flist = mklist(code_i-1); $$=n; }
-  | expr GT expr  { Node* n=calloc(1,sizeof(Node));
-      sprintf(code[code_i++],"if %s > %s goto ", $1->val,$3->val);
-      sprintf(code[code_i++],"goto ");
-      n->tlist = mklist(code_i-2); n->flist = mklist(code_i-1); $$=n; }
-  | expr LT expr  { Node* n=calloc(1,sizeof(Node));
-      sprintf(code[code_i++],"if %s < %s goto ", $1->val,$3->val);
-      sprintf(code[code_i++],"goto ");
-      n->tlist = mklist(code_i-2); n->flist = mklist(code_i-1); $$=n; }
-  | expr EE expr  { Node* n=calloc(1,sizeof(Node));
-      sprintf(code[code_i++],"if %s == %s goto ", $1->val,$3->val);
-      sprintf(code[code_i++],"goto ");
-      n->tlist = mklist(code_i-2); n->flist = mklist(code_i-1); $$=n; }
-  | expr NE expr  { Node* n=calloc(1,sizeof(Node));
-      sprintf(code[code_i++],"if %s != %s goto ", $1->val,$3->val);
-      sprintf(code[code_i++],"goto ");
-      n->tlist = mklist(code_i-2); n->flist = mklist(code_i-1); $$=n; }
+PostfixExpression:
+    FuncCall {
+        strcpy($$.type, $1.type);
+        sprintf($$.lexeme, "%s", $1.lexeme);
+    }
+    | ID DOT ID LPAR ArgList RPAR {
+        // Method call: obj.method(args)
+        check_declaration(string($1.lexeme));
+        string obj_type = func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes;
+        
+        if(class_table.find(obj_type) == class_table.end()){
+            errorBuffer.push_back("Error: '" + obj_type + "' is not a class type");
+        }
+        else if(class_table[obj_type].methods.find(string($3.lexeme)) == class_table[obj_type].methods.end()){
+            errorBuffer.push_back("Error: Method '" + string($3.lexeme) + "' not found in class '" + obj_type + "'");
+        }
+        
+        strcpy($$.type, class_table[obj_type].methods[string($3.lexeme)].return_type.c_str());
+        sprintf($$.lexeme, get_temp().c_str());
+        tac.push_back(string($$.lexeme) + " = @call " + string($1.lexeme) + "." + string($3.lexeme) + " " + string($$.type));
+    }
+    | ID LBRACK EXPRESSION RBRACK {
+        if(check_declaration(string($1.lexeme)) && func_table[curr_func_name].symbol_table[string($1.lexeme)].isArray == 0) { 
+            errorBuffer.push_back("Variable is not an array"); 
+        }
+        check_scope(string($1.lexeme));
+        strcpy($$.type, func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes.c_str());
+        sprintf($$.lexeme, get_temp().c_str());
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " [ " + string($3.lexeme) + " ] " + string($$.type));
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    ;
+ 
+UnaryExpression:   
+    UnaryOperator PrimaryExpression {
+        strcpy($$.type, $2.type);
+        sprintf($$.lexeme, get_temp().c_str());
+        if(string($1.lexeme) == "~" || string($1.lexeme) == "-"){
+            tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($2.lexeme) + " " + string($$.type));
+        }
+        else if(string($1.lexeme) == "+"){
+            tac.push_back(string($$.lexeme) + " = " + string($2.lexeme) + " " + string($$.type));
+        }
+        else{
+            tac.push_back(string($$.lexeme) + " = ~ " + string($2.lexeme) + " " + string($$.type));
+        }
+        if(const_temps.find(string($2.lexeme)) == const_temps.end() && $2.lexeme[0] == '@') free_temp.push(string($2.lexeme));
+    }
+    ;
+ 
+PrimaryExpression:
+    ID {
+        // cout << "a";
+        check_declaration(string($1.lexeme));
+        // check_scope(string($1.lexeme));
+        strcpy($$.type, func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes.c_str());
+        strcpy($$.lexeme, $1.lexeme);
+    }
+    | ID DOT ID {
+        // Member access: obj.field or obj.method
+        check_declaration(string($1.lexeme));
+        string obj_type = func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes;
+        
+        if(class_table.find(obj_type) == class_table.end()){
+            errorBuffer.push_back("Error: '" + obj_type + "' is not a class/record type");
+        }
+        else if(class_table[obj_type].fields.find(string($3.lexeme)) == class_table[obj_type].fields.end()){
+            errorBuffer.push_back("Error: Field '" + string($3.lexeme) + "' not found in class '" + obj_type + "'");
+        }
+        
+        strcpy($$.type, class_table[obj_type].fields[string($3.lexeme)].dataTypes.c_str());
+        sprintf($$.lexeme, get_temp().c_str());
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + "." + string($3.lexeme) + " " + string($$.type));
+    }
+    | Literal {
+        strcpy($$.type, $1.type);
+        string t=get_temp();
+        sprintf($$.lexeme, t.c_str());
+        tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($$.type)); 
+        temp_map[string($1.lexeme)] = string($$.lexeme);
+        const_temps.insert(t);
+        // if(temp_map[string($1.lexeme)] == ""){
+        //     string t=get_temp();
+        //     sprintf($$.lexeme, t.c_str());
+        //     tac.push_back(string($$.lexeme) + " = " + string($1.lexeme) + " " + string($$.type)); 
+        //     temp_map[string($1.lexeme)] = string($$.lexeme);
 
-  | expr AND M expr
-    {
-      backpatch($1->tlist, $3);
-      Node* n=calloc(1,sizeof(Node));
-      n->tlist = $4->tlist;
-      n->flist = merge($1->flist, $4->flist);
-      $$=n;
+        //     const_temps.insert(t);
+        // }
+        // else{
+        //     //tac.push_back(temp_map[string($1.lexeme)] + " = " + string($1.lexeme) + " " + string($$.type)); 
+        //     strcpy($$.lexeme, temp_map[string($1.lexeme)].c_str());
+        // }
     }
-  | expr OR  M expr
-    {
-      backpatch($1->flist, $3);
-      Node* n=calloc(1,sizeof(Node));
-      n->tlist = merge($1->tlist, $4->tlist);
-      n->flist = $4->flist;
-      $$=n;
+    | LPAR EXPRESSION RPAR {
+        strcpy($$.type, $2.type);
+        strcpy($$.lexeme, $2.lexeme);
     }
-  | NOT expr
-    {
-      Node* n=calloc(1,sizeof(Node));
-      n->tlist = $2->flist; n->flist = $2->tlist; $$=n;
+    ;
+ 
+UnaryOperator:
+    ADD {  }
+    | SUB {  }
+    | NOT {  }
+    | BITNOT {  }
+    ;
+ 
+Literal:
+    INT_LITERAL {
+        strcpy($$.type, "INT");
+        strcpy($$.lexeme, $1.lexeme);
     }
-  | T { Node* n=calloc(1,sizeof(Node)); sprintf(code[code_i++],"goto ");
-        n->tlist=mklist(code_i-1); $$=n; }
-  | F { Node* n=calloc(1,sizeof(Node)); sprintf(code[code_i++],"goto ");
-        n->flist=mklist(code_i-1); $$=n; }
+    | FLOAT_LITERAL {
+        strcpy($$.type, "FLOAT");
+        strcpy($$.lexeme, $1.lexeme);
+    }
+    | CHAR_LITERAL {
+        strcpy($$.type, "CHAR");
+        strcpy($$.lexeme, $1.lexeme);
+    }
+    ;
+                   
+AssignmentStatement:
+    ID ASSIGN EXPRESSION {
+        check_type(func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes, string($3.type));
+        check_declaration(string($1.lexeme));
+        check_scope(string($1.lexeme));
+        tac.push_back(string($1.lexeme) + " = " + string($3.lexeme) + " " + func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes);
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') free_temp.push(string($3.lexeme));
+    }
+    | ID DOT ID ASSIGN EXPRESSION {
+        // Member field assignment: obj.field = value;
+        check_declaration(string($1.lexeme));
+        string obj_type = func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes;
+        
+        if(class_table.find(obj_type) == class_table.end()){
+            errorBuffer.push_back("Error: '" + obj_type + "' is not a class/record type");
+        }
+        else {
+            check_type(class_table[obj_type].fields[string($3.lexeme)].dataTypes, string($5.type));
+            tac.push_back(string($1.lexeme) + "." + string($3.lexeme) + " = " + string($5.lexeme) + " " + class_table[obj_type].fields[string($3.lexeme)].dataTypes);
+        }
+        
+        if(const_temps.find(string($5.lexeme)) == const_temps.end() && $5.lexeme[0] == '@') free_temp.push(string($5.lexeme));
+    }
+    | ID LBRACK EXPRESSION RBRACK ASSIGN EXPRESSION {
+        check_type(func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes, string($6.type));
+        if(check_declaration(string($1.lexeme)) && func_table[curr_func_name].symbol_table[string($1.lexeme)].isArray == 0) { 
+            errorBuffer.push_back("Line no " + to_string(countn+1) + " : Variable is not an array"); 
+        }
+        check_scope(string($1.lexeme));
+        tac.push_back(string($1.lexeme) + " [ " + string($3.lexeme) + " ] = " + string($6.lexeme) + " " + func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes);
+        if(const_temps.find(string($6.lexeme)) == const_temps.end() && $6.lexeme[0] == '@') free_temp.push(string($6.lexeme));
+    }
+    ;
 
-  | LP expr RP { $$=$2; }
-  | term       { $$=$1; }
-  ;
+IFStatement:
+    IF  {
+        sprintf($1.parentNext, "#L%d", labelCount++);
+    } LPAR EXPRESSION RPAR { 
+        tac.push_back("if " + string($4.lexeme) + " GOTO #L" + to_string(labelCount) + " else GOTO #L" + to_string(labelCount+1));
+        sprintf($4.if_body, "#L%d", labelCount++);
+        sprintf($4.else_body, "#L%d", labelCount++); 
+        tac.push_back(string($4.if_body) + ":");
 
-term
-  : optsign ID incdec
-    {
-      Sym* s = lookup($2);
-      if(!s){ fprintf(stderr,"variable '%s' not declared\n",$2); }
-      char* t=newtmp();
-      if(strlen($1)==0){ /* +id++ / id-- etc handled here as postfix on id */
-        sprintf(code[code_i++], "%s = %s\n", t, $2);
-        sprintf(code[code_i++], "%s = %s %c 1\n", $2, t, $3[0]);
-      }else{
-        /* -(id++) : store old value then negate, then apply inc/dec to id */
-        char* tt=newtmp();
-        sprintf(code[code_i++], "%s = %s\n", tt, $2);
-        sprintf(code[code_i++], "%s = %s%s\n", t, $1, tt);
-        sprintf(code[code_i++], "%s = %s %c 1\n", $2, tt, $3[0]);
-      }
-      Node* n=calloc(1,sizeof(Node));
-      strcpy(n->val,t); strcpy(n->type,s?s->type:"int"); n->isPostfix=true; $$=n;
+        if(const_temps.find(string($4.lexeme)) == const_temps.end() && $4.lexeme[0] == '@') free_temp.push(string($4.lexeme));
+    } LBRACE {
+        scope_history.push(++scope_counter);  
+    } StatementList RBRACE {  
+        scope_history.pop(); 
+        --scope_counter;
+        tac.push_back("GOTO " + string($1.parentNext));
+        tac.push_back(string($4.else_body) + ":");
+    } ELSEIFStatement ELSEStatement {   
+        tac.push_back(string($1.parentNext) + ":");
     }
-  | optsign incdec ID
-    {
-      Sym* s = lookup($3);
-      if(!s){ fprintf(stderr,"variable '%s' not declared\n",$3); }
-      char* t=newtmp();
-      char* tt=newtmp();
-      sprintf(code[code_i++], "%s = %s %c 1\n", tt, $3, $2[0]); /* pre inc/dec */
-      sprintf(code[code_i++], "%s = %s\n", $3, tt);
-      sprintf(code[code_i++], "%s = %s%s\n", t, $1, tt);
-      Node* n=calloc(1,sizeof(Node));
-      strcpy(n->val,t); strcpy(n->type,s?s->type:"int"); n->isPostfix=true; $$=n;
-    }
-  | optsign ID
-    {
-      Sym* s = lookup($2);
-      if(!s){ fprintf(stderr,"variable '%s' not declared\n",$2); }
-      char* t=newtmp();
-      if(strlen($1)==0){
-        Node* n=calloc(1,sizeof(Node));
-        strcpy(n->val,$2); strcpy(n->type,s?s->type:"int"); $$=n;
-      }else{
-        sprintf(code[code_i++], "%s = %s%s\n", t, $1, $2);
-        Node* n=calloc(1,sizeof(Node)); strcpy(n->val,t); strcpy(n->type,s?s->type:"int"); $$=n;
-      }
-    }
-  | optsign NUM
-    {
-      char* t=newtmp();
-      if(strlen($1)==0){
-        Node* n=calloc(1,sizeof(Node)); strcpy(n->val,$2); strcpy(n->type,"int"); $$=n;
-      }else{
-        sprintf(code[code_i++], "%s = %s%s\n", t, $1, $2);
-        Node* n=calloc(1,sizeof(Node)); strcpy(n->val,t); strcpy(n->type,"int"); $$=n;
-      }
-    }
-  ;
+    ;        
 
-optsign
-  : MI   { $$=$1; }
-  | /* empty */ { $$=""; }
-  ;
+ELSEIFStatement:
+    ELIF {
+        string str = tac[tac.size()-2].substr(5);
+        char* hold = const_cast<char*>(str.c_str());
+        sprintf($1.parentNext, "%s", hold);
+    } LPAR EXPRESSION RPAR {
+        tac.push_back("if " + string($4.lexeme) + " GOTO #L" + to_string(labelCount) + " else GOTO #L" + to_string(labelCount+1));
+        sprintf($4.if_body, "#L%d", labelCount++);
+        sprintf($4.else_body, "#L%d", labelCount++); 
+        tac.push_back(string($4.if_body) + ":");
 
-incdec
-  : INC { $$=$1; }
-  | DEC { $$=$1; }
-  ;
+        if(const_temps.find(string($4.lexeme)) == const_temps.end() && $4.lexeme[0] == '@') free_temp.push(string($4.lexeme));
+    } LBRACE {
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE {
+        scope_history.pop();
+        --scope_counter;
+        tac.push_back("GOTO " + string($1.parentNext));
+        tac.push_back(string($4.else_body) + ":");
+    } ELSEIFStatement  
+    | {  }
+    ;
 
+ELSEStatement:
+    ELSE LBRACE {
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE{
+        scope_history.pop(); 
+        --scope_counter;
+    }
+    | {  }
+    ;       
+
+SWITCHStatement:
+    SWITCH {
+        int temp_label = labelCount;
+        loop_break.push(temp_label);
+        sprintf($1.parentNext, "#L%d", labelCount++);
+    } LPAR ID {
+        temp_index = variableCount;
+        tac.push_back("@t" + to_string(variableCount++) + " = " + string($4.lexeme) + " " + func_table[curr_func_name].symbol_table[string($4.lexeme)].dataTypes);
+    } RPAR LBRACE CASEStatementList {
+        // strcpy($8.id, $4.lexeme);
+        // strcpy($8.parentNext, $1.parentNext);
+    }
+    DefaultStatement RBRACE {
+        tac.push_back(string($1.parentNext) + ":");
+        loop_break.pop();
+    }
+    ;
+
+CASEStatementList:
+    CASEStatement CASEStatementList {
+        strcpy($1.id, $$.id);
+        strcpy($1.parentNext, $$.parentNext);
+    }
+    | {  }
+    ;
+
+CASEStatement:
+    CASE {
+        // tac.push_back(string($4.if_body) + ":");
+    } LPAR Literal {
+        char* hold = const_cast<char*>(to_string(variableCount).c_str());
+        sprintf($4.temp, "%s", hold);
+        tac.push_back("@t" + to_string(variableCount++) + " = " + string($4.lexeme) + " " + string($4.type));
+        tac.push_back("@t" + to_string(variableCount++) + " = " + "@t" + to_string(temp_index) + " == " + "@t" + string($4.temp) + " INT");
+        tac.push_back("if @t" + to_string(variableCount-1) + " GOTO #L" + to_string(labelCount) + " else GOTO #L" + to_string(labelCount+1));
+        tac.push_back("#L" + to_string(labelCount) + ":");
+        sprintf($4.case_body, "#L%d", labelCount++);
+        sprintf($4.parentNext, "#L%d", labelCount++);
+    } RPAR COLON StatementList {
+        tac.push_back(string($4.parentNext) + ":");
+    }
+    ;
+
+DefaultStatement:
+    DEFAULT COLON StatementList {  }
+    | {  }
+    ;                       
+
+WHILEStatement:
+    WHILE {
+        sprintf($1.loop_body, "#L%d", labelCount); 
+        loop_continue.push(labelCount++);
+        tac.push_back("\n" + string($1.loop_body) + ":");
+    } LPAR EXPRESSION RPAR {
+        sprintf($4.if_body, "#L%d", labelCount++); 
+
+        loop_break.push(labelCount);
+        sprintf($4.else_body, "#L%d", labelCount++); 
+
+        tac.push_back("\nif " + string($4.lexeme) + " GOTO " + string($4.if_body) + " else GOTO " + string($4.else_body));
+        tac.push_back("\n" + string($4.if_body) + ":");
+
+        if(const_temps.find(string($4.lexeme)) == const_temps.end() && $4.lexeme[0] == '@') free_temp.push(string($4.lexeme));
+        
+    } LBRACE {
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE {
+        scope_history.pop();
+        --scope_counter;
+        tac.push_back("GOTO " + string($1.loop_body));
+        tac.push_back("\n" + string($4.else_body) + ":");
+        loop_continue.pop();
+        loop_break.pop();
+    }
+    ;
+
+LOOPWHILEStatement:
+    LOOP WHILE {
+        sprintf($2.loop_body, "#L%d", labelCount); 
+        loop_continue.push(labelCount++);
+        tac.push_back("\n" + string($2.loop_body) + ":");
+    } EXPRESSION {
+        sprintf($4.if_body, "#L%d", labelCount++); 
+
+        loop_break.push(labelCount);
+        sprintf($4.else_body, "#L%d", labelCount++); 
+
+        tac.push_back("\nif " + string($4.lexeme) + " GOTO " + string($4.if_body) + " else GOTO " + string($4.else_body));
+        tac.push_back("\n" + string($4.if_body) + ":");
+
+        if(const_temps.find(string($4.lexeme)) == const_temps.end() && $4.lexeme[0] == '@') free_temp.push(string($4.lexeme));
+        
+    } LBRACE {
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE {
+        scope_history.pop();
+        --scope_counter;
+        tac.push_back("GOTO " + string($2.loop_body));
+        tac.push_back("\n" + string($4.else_body) + ":");
+        loop_continue.pop();
+        loop_break.pop();
+    }
+    ;
+
+LOOPUNTILStatement:
+    LOOP UNTIL {
+        sprintf($2.loop_body, "#L%d", labelCount); 
+        loop_continue.push(labelCount++);
+        tac.push_back("\n" + string($2.loop_body) + ":");
+    } EXPRESSION {
+        sprintf($4.if_body, "#L%d", labelCount++); 
+
+        loop_break.push(labelCount);
+        sprintf($4.else_body, "#L%d", labelCount++); 
+
+        tac.push_back("\nif " + string($4.lexeme) + " GOTO " + string($4.if_body) + " else GOTO " + string($4.else_body));
+        tac.push_back("\n" + string($4.if_body) + ":");
+
+        if(const_temps.find(string($4.lexeme)) == const_temps.end() && $4.lexeme[0] == '@') free_temp.push(string($4.lexeme));
+        
+    } LBRACE {
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE {
+        scope_history.pop();
+        --scope_counter;
+        tac.push_back("GOTO " + string($2.loop_body));
+        tac.push_back("\n" + string($4.else_body) + ":");
+        loop_continue.pop();
+        loop_break.pop();
+    }
+    ;
+
+FORStatement:
+    FOR LPAR AssignmentStatement SEMICOLON {
+        sprintf($1.loop_body, "#L%d", labelCount++); 
+        tac.push_back("\n" + string($1.loop_body) + ":");
+    } EXPRESSION SEMICOLON {  
+        sprintf($6.if_body, "#L%d", labelCount++); 
+        loop_break.push(labelCount);
+        sprintf($6.else_body, "#L%d", labelCount++); 
+        tac.push_back("\nif " + string($6.lexeme) + " GOTO " + string($6.if_body) + " else GOTO " + string($6.else_body));
+        sprintf($6.loop_body, "#L%d", labelCount); 
+        loop_continue.push(labelCount++);
+        tac.push_back("\n" + string($6.loop_body) + ":");
+        if(const_temps.find(string($6.lexeme)) == const_temps.end() && $6.lexeme[0] == '@') free_temp.push(string($6.lexeme));
+    } AssignmentStatement RPAR {
+        tac.push_back("GOTO " + string($1.loop_body));
+        tac.push_back("\n" + string($6.if_body) + ":");
+    } LBRACE {
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE {
+        scope_history.pop();
+        --scope_counter;
+        tac.push_back("GOTO " + string($6.loop_body));
+        tac.push_back("\n" + string($6.else_body) + ":");
+        loop_continue.pop();
+        loop_break.pop();
+    }
+    ;
+
+LOOPFROMStatement:
+    LOOP FROM ID ASSIGN EXPRESSION TO {
+        // Variable declaration
+        tac.push_back("- INT " + string($3.lexeme));
+        tac.push_back(string($3.lexeme) + " = " + string($5.lexeme) + " INT");
+        sprintf($1.loop_body, "#L%d", labelCount++); 
+        tac.push_back("\n" + string($1.loop_body) + ":");
+        if(const_temps.find(string($5.lexeme)) == const_temps.end() && $5.lexeme[0] == '@') free_temp.push(string($5.lexeme));
+    } EXPRESSION StepClause {
+        sprintf($8.if_body, "#L%d", labelCount++); 
+        loop_break.push(labelCount);
+        sprintf($8.else_body, "#L%d", labelCount++); 
+        
+        string temp = get_temp();
+        tac.push_back(temp + " = " + string($3.lexeme) + " <= " + string($8.lexeme) + " INT");
+        tac.push_back("\nif " + temp + " GOTO " + string($8.if_body) + " else GOTO " + string($8.else_body));
+        free_temp.push(temp);
+        
+        sprintf($8.loop_body, "#L%d", labelCount); 
+        loop_continue.push(labelCount++);
+        tac.push_back("\n" + string($8.loop_body) + ":");
+        
+        // Increment logic
+        if(strlen($9.lexeme) > 0) {
+            tac.push_back(string($3.lexeme) + " = " + string($3.lexeme) + " + " + string($9.lexeme) + " INT");
+            if(const_temps.find(string($9.lexeme)) == const_temps.end() && $9.lexeme[0] == '@') free_temp.push(string($9.lexeme));
+        } else {
+            tac.push_back(string($3.lexeme) + " = " + string($3.lexeme) + " + 1 INT");
+        }
+        
+        tac.push_back("GOTO " + string($1.loop_body));
+        tac.push_back("\n" + string($8.if_body) + ":");
+        if(const_temps.find(string($8.lexeme)) == const_temps.end() && $8.lexeme[0] == '@') free_temp.push(string($8.lexeme));
+    } LBRACE {
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE {
+        scope_history.pop();
+        --scope_counter;
+        tac.push_back("GOTO " + string($8.loop_body));
+        tac.push_back("\n" + string($8.else_body) + ":");
+        loop_continue.pop();
+        loop_break.pop();
+    }
+    ;
+
+
+StepClause:
+    STEP EXPRESSION {
+        strcpy($$.lexeme, $2.lexeme);
+    }
+    | /* epsilon */ {
+        strcpy($$.lexeme, "");
+    }
+    ;
+
+BREAKStatement:
+    BREAK SEMICOLON {
+        if(!loop_break.empty()){
+            tac.push_back("GOTO #L" + to_string(loop_break.top()));
+        }
+    }
+    ;
+
+CONTINUEStatement:
+    CONTINUE SEMICOLON {
+        if(!loop_continue.empty()){
+            tac.push_back("GOTO #L" + to_string(loop_continue.top()));
+        }
+    }
+    ;
+
+INPUTStatement:
+    INPUT LPAR ID RPAR SEMICOLON  {
+        check_declaration($3.lexeme);
+        tac.push_back("input " + string($3.lexeme) + " " + func_table[curr_func_name].symbol_table[string($3.lexeme)].dataTypes);
+        // check_scope(string($3.lexeme));
+    }
+    | INPUT LPAR ID LBRACK EXPRESSION RBRACK RPAR SEMICOLON {
+        check_declaration($3.lexeme);
+        string temp = get_temp();
+        tac.push_back("input " + temp + " " + func_table[curr_func_name].symbol_table[string($3.lexeme)].dataTypes);
+        tac.push_back(string($3.lexeme) + " [ " + string($5.lexeme) + " ] = " + temp + " " + func_table[curr_func_name].symbol_table[string($3.lexeme)].dataTypes);
+        free_temp.push(temp);
+        // check_scope(string($3.lexeme));
+    }
+    ;
+
+RESULTStatement:
+    RESULT LPAR EXPRESSION RPAR SEMICOLON {
+        tac.push_back("print " + string($3.lexeme) + " " + string($3.type));
+    }
+    | RESULT LPAR STRING_LITERAL RPAR SEMICOLON {
+        tac.push_back("print " + string($3.lexeme) + " STRING_LITERAL");
+    }
+    ;
+
+FuncCall:
+    ID {
+        string func_name = string($1.lexeme);
+        
+        // Check if it's a library function
+        bool is_lib_func = false;
+        string lib_name = "";
+        
+        for(auto& [lib, funcs] : library_functions) {
+            if(funcs.find(func_name) != funcs.end()) {
+                is_lib_func = true;
+                lib_name = lib;
+                break;
+            }
+        }
+        
+        if(is_lib_func) {
+            // Check if library is imported
+            if(imported_libraries.find(lib_name) == imported_libraries.end()) {
+                errorBuffer.push_back("Error: Function '" + func_name + 
+                    "' from library '" + lib_name + "' used without importing. Add: import " + lib_name);
+            } else {
+                // Lazy load: parse library function and generate 3AC if not done
+                string key = lib_name + "." + func_name;
+                if(!available_lib_functions[key].is_loaded) {
+                    load_library_function(lib_name, func_name);  // NEW FUNCTION
+                    available_lib_functions[key].is_loaded = true;
+                }
+            }
+        }
+        func_call_id.push({string($1.lexeme), func_table[string($1.lexeme)].param_types});
+    } LPAR ArgList RPAR {
+        string func_name = string($1.lexeme);
+        // recompute if this is a library function
+        bool is_lib_func = false;
+        string lib_name = "";
+        for(auto& [lib, funcs] : library_functions) {
+            if(funcs.find(func_name) != funcs.end()) {
+                is_lib_func = true;
+                lib_name = lib;
+                break;
+            }
+        }
+
+        strcpy($$.type, func_table[func_name].return_type.c_str());
+        func_call_id.pop();
+
+        // If the library loader already emitted a @call and recorded its temp, reuse it here
+        if(is_lib_func) {
+            string key = lib_name + "." + func_name;
+            if(available_lib_functions[key].call_emitted && available_lib_functions[key].temp_name.size() > 0) {
+                sprintf($$.lexeme, available_lib_functions[key].temp_name.c_str());
+            } else {
+                sprintf($$.lexeme, get_temp().c_str());
+                tac.push_back(string($$.lexeme) + " = @call " + func_name + " " + func_table[func_name].return_type + " " + to_string(func_table[func_name].num_params));
+            }
+        } else {
+            sprintf($$.lexeme, get_temp().c_str());
+            tac.push_back(string($$.lexeme) + " = @call " + func_name + " " + func_table[func_name].return_type + " " + to_string(func_table[func_name].num_params));
+        }
+    }
+    ;
+
+ArgList:
+    Arg COMMA ArgList {
+        int sz = func_call_id.top().second.size();
+        string type = func_call_id.top().second[sz-1];
+        func_call_id.top().second.pop_back();
+        if(type_check(string($1.type), type)) {
+            errorBuffer.push_back("datatype for argument not matched in line " + to_string(countn+1));
+        }
+    }
+    | Arg {
+        int sz = func_call_id.top().second.size();
+        string type = func_call_id.top().second[sz-1];
+        func_call_id.top().second.pop_back();
+        if(type_check(string($1.type), type)) {
+            errorBuffer.push_back("datatype for argument not matched in line " + to_string(countn+1));
+        }
+    }
+    | /* epsilon */ {  }
+    ;
+
+Arg:
+    EXPRESSION {
+        tac.push_back("Param " + string($1.lexeme) + " " + string($1.type));
+    }
+    ;
+
+MatchStatement:
+    MATCH LPAR EXPRESSION RPAR {
+        sprintf($1.parentNext, "#L%d", labelCount++);
+        strcpy($1.temp, get_temp().c_str());
+        strcpy($1.type, $3.type);
+        
+        // Store match expression in temp
+        tac.push_back(string($1.temp) + " = " + string($3.lexeme) + " " + string($3.type));
+        
+        if(const_temps.find(string($3.lexeme)) == const_temps.end() && $3.lexeme[0] == '@') 
+            free_temp.push(string($3.lexeme));
+    } LBRACE PatternArmList RBRACE {
+        // End of match - add final label
+        tac.push_back(string($1.parentNext) + ":");
+        if(const_temps.find(string($1.temp)) == const_temps.end() && $1.temp[0] == '@') 
+            free_temp.push(string($1.temp));
+    }
+    ;
+
+PatternArmList:
+    PatternArm PatternArmList {
+        strcpy($$.temp, $1.temp);
+        strcpy($$.type, $1.type);
+        strcpy($$.parentNext, $1.parentNext);
+        strcpy($2.temp, $1.temp);
+        strcpy($2.type, $1.type);
+        strcpy($2.parentNext, $1.parentNext);
+    }
+    | PatternArm {
+        strcpy($$.temp, $1.temp);
+        strcpy($$.type, $1.type);
+        strcpy($$.parentNext, $1.parentNext);
+    }
+    ;
+
+PatternArm:
+    Pattern FATARROW {
+        // Get match temp and type from parent
+        strcpy($1.temp, $<node>0.temp);
+        strcpy($1.type, $<node>0.type);
+        strcpy($1.parentNext, $<node>0.parentNext);
+        
+        string comp_temp = get_temp();
+        
+        if(string($1.lexeme) == "_") {
+            // Wildcard - always matches (default case)
+            sprintf($2.case_body, "#L%d", labelCount++);
+            tac.push_back(string($2.case_body) + ":");
+            strcpy($2.else_body, "");
+        } else {
+            // Pattern matching comparison
+            sprintf($2.case_body, "#L%d", labelCount++);
+            sprintf($2.else_body, "#L%d", labelCount++);
+            
+            tac.push_back(comp_temp + " = " + string($1.temp) + " == " + string($1.lexeme) + " " + string($1.type));
+            tac.push_back("if " + comp_temp + " GOTO " + string($2.case_body) + " else GOTO " + string($2.else_body));
+            tac.push_back(string($2.case_body) + ":");
+            
+            free_temp.push(comp_temp);
+        }
+        
+        strcpy($2.temp, $1.temp);
+        strcpy($2.type, $1.type);
+        strcpy($2.parentNext, $1.parentNext);
+    } LBRACE {
+        scope_history.push(++scope_counter);
+    } StatementList RBRACE {
+        scope_history.pop();
+        --scope_counter;
+        
+        // Jump to end of match after executing this arm
+        tac.push_back("GOTO " + string($2.parentNext));
+        
+        // Add else label (for next pattern to check)
+        if(strlen($2.else_body) > 0) {
+            tac.push_back(string($2.else_body) + ":");
+        }
+        
+        strcpy($$.temp, $2.temp);
+        strcpy($$.type, $2.type);
+        strcpy($$.parentNext, $2.parentNext);
+    }
+    ;
+
+Pattern:
+    INT_LITERAL {
+        strcpy($$.lexeme, $1.lexeme);
+        strcpy($$.type, "INT");
+    }
+    | FLOAT_LITERAL {
+        strcpy($$.lexeme, $1.lexeme);
+        strcpy($$.type, "FLOAT");
+    }
+    | CHAR_LITERAL {
+        strcpy($$.lexeme, $1.lexeme);
+        strcpy($$.type, "CHAR");
+    }
+    | ID {
+        check_declaration(string($1.lexeme));
+        strcpy($$.lexeme, $1.lexeme);
+        strcpy($$.type, func_table[curr_func_name].symbol_table[string($1.lexeme)].dataTypes.c_str());
+    }
+    | UNDERSCORE {
+        strcpy($$.lexeme, "_");
+        strcpy($$.type, "WILDCARD");
+    }
+    ;
 %%
 
-void yyerror(const char* s){
-  fprintf(stderr,"Rejected - %s\n", s);
+bool check_declaration(string variable){
+    if(func_table[curr_func_name].symbol_table.find(variable) == func_table[curr_func_name].symbol_table.end()){
+        errorBuffer.push_back("Variable not declared in line " + to_string(countn+1) + " before usage.");
+        return false;
+    }
+    return true;
 }
 
-int main(int argc, char** argv){
-  if(argc!=2){ fprintf(stderr,"Usage: %s <input>\n", argv[0]); return 1; }
-  FILE* f=fopen(argv[1],"r"); if(!f){ perror("open"); return 1; }
-  yyin=f;
-  push_scope(); /* global scope */
-  yyparse();
-  fclose(f);
-  return 0;
+bool check_scope(string variable){
+    int var_scope = func_table[curr_func_name].symbol_table[variable].scope;
+    // int curr_scope = scope_counter;
+    stack<int> temp_stack(scope_history);
+    // cout << "variable: " << variable << endl;
+    // cout << "var_scope: " << var_scope << endl;
+    // PrintStack(temp_stack);
+    // cout << endl;
+    while(!temp_stack.empty()){
+        if(temp_stack.top() == var_scope){
+            return true;
+        }
+        temp_stack.pop();
+    }
+    errorBuffer.push_back("Scope of variable '" + variable +"' not matching in line " + to_string(countn+1) + ".");
+    return true;
+}
+
+bool multiple_declaration(string variable){
+    if(!(func_table[curr_func_name].symbol_table.find(variable) == func_table[curr_func_name].symbol_table.end())){
+        errorBuffer.push_back("redeclaration of '" + variable + "' in line " + to_string(countn+1));
+        return true;
+    }
+    return false;
+}
+
+bool check_type(string l, string r){
+    if(r == "FLOAT" && l == "CHAR"){
+        errorBuffer.push_back("Cannot convert type FLOAT to CHAR in line " + to_string(countn+1));
+        return false;
+    }
+    if(l == "FLOAT" && r == "CHAR"){
+        errorBuffer.push_back("Cannot convert typr CHAR to FLOAT in line " + to_string(countn+1));
+        return false;
+    }
+    return true;
+}
+
+bool is_reserved_word(string id){
+    for(auto &item: id){
+        item = tolower(item);
+    }
+    auto iterator = find(reserved.begin(), reserved.end(), id);
+    if(iterator != reserved.end()){
+        errorBuffer.push_back("usage of reserved keyword '" + id + "' in line " + to_string(countn+1));
+        return true;
+    }
+    return false;
+}
+
+bool type_check(string type1, string type2) {
+    if((type1 == "FLOAT" and type2 == "CHAR") or (type1 == "CHAR" and type2 == "FLOAT")) {
+        return true;
+    }
+    return false;
+}
+
+void yyerror(const char* msg) {
+    errorBuffer.push_back("syntax error in line " + to_string(countn+1));
+    for(auto item: errorBuffer)
+        cout << item << endl;
+    fprintf(stderr, "%s\n", msg);
+    exit(1);
+}
+
+string get_temp(){
+    if(free_temp.empty()){
+        return "@t" + to_string(variableCount++);
+    }
+    string t=free_temp.front();
+    free_temp.pop(); 
+    return t; 
+}
+
+void PrintStack(stack<int> s) {
+    if(s.empty())
+        return;
+    int x = s.top();
+    s.pop();
+    cout << x << ' ';
+    PrintStack(s);
+    s.push(x);
+}
+
+// In main() or before yyparse()
+void init_library_registry() {
+    // math.rcblib
+    library_functions["math"] = {"abs", "max", "min", "pow", "sqrt", "sin", "cos", "tan", "rand", "randint", "srand"};
+    // strings.rcblib
+    library_functions["strings"] = {"len", "upper", "lower", "split", "join", "replace", "find", "trim", "reverse"};
+    // io.rcblib
+    // library_functions["io"] = {"args", "input", "result"};
+    // term.rcblib
+    library_functions["term"] = {"curs_set", "clear", "move_cursor", "get_size", "refresh", "raw", "noecho", "echo", "keypad", "get_wch"};
+    // files.rcblib
+    library_functions["files"] = {"exists", "readlines", "writelines"};
+    // Mark all as not loaded initially
+    for(auto& [lib, funcs] : library_functions) {
+        for(auto& fn : funcs) {
+            available_lib_functions[lib + "." + fn] = {lib, fn, "", {}, false, "", false};
+        }
+    }
+}
+
+
+/* void init_library_registry() {
+    // math.rcblib
+    library_functions["math"] = {"abs", "max", "min", "pow", "sqrt", "sin", "cos", "tan", "rand", "randint", "srand"};
+    // strings.rcblib
+    library_functions["strings"] = {"len", "upper", "lower", "split", "join", "replace", "find", "trim", "reverse"};
+    // io.rcblib
+    library_functions["io"] = {"args", "input", "result"};
+    // term.rcblib
+    library_functions["term"] = {"curs_set", "clear", "move_cursor", "get_size", "refresh", "raw", "noecho", "echo", "keypad", "get_wch"};
+    // files.rcblib
+    library_functions["files"] = {"exists", "readlines", "writelines"};
+} */
+
+void load_library_function(string lib_name, string func_name) {
+    // DUMMY IMPLEMENTATION - just register function signatures
+    string key = lib_name + "." + func_name;
+
+    if(lib_name == "math") {
+        if(func_name == "abs") {
+            func_table["abs"] = {"INT", 1, {"INT"}, {}};
+            /* tac.push_back("# Library function: math.abs loaded (stub)"); */
+            // Emit a representative @call line at load-time and record its temp
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call abs INT 1");
+        } else if(func_name == "sqrt") {
+            func_table["sqrt"] = {"FLOAT", 1, {"FLOAT"}, {}};
+            /* tac.push_back("# Library function: math.sqrt loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call sqrt FLOAT 1");
+        } else if(func_name == "pow") {
+            func_table["pow"] = {"INT", 2, {"INT", "INT"}, {}};
+            /* tac.push_back("# Library function: math.pow loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call pow INT 2");
+        } else if(func_name == "max") {
+            func_table["max"] = {"INT", 2, {"INT", "INT"}, {}};
+            /* tac.push_back("# Library function: math.max loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call max INT 2");
+        } else if(func_name == "min") {
+            func_table["min"] = {"INT", 2, {"INT", "INT"}, {}};
+            /* tac.push_back("# Library function: math.min loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call min INT 2");
+        }
+    } else if(lib_name == "strings") {
+        if(func_name == "len") {
+            func_table["len"] = {"INT", 1, {"STRING"}, {}};
+            /* tac.push_back("# Library function: strings.len loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call len INT 1");
+        } else if(func_name == "upper") {
+            func_table["upper"] = {"STRING", 1, {"STRING"}, {}};
+            /* tac.push_back("# Library function: strings.upper loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call upper STRING 1");
+        } else if(func_name == "lower") {
+            func_table["lower"] = {"STRING", 1, {"STRING"}, {}};
+            /* tac.push_back("# Library function: strings.lower loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call lower STRING 1");
+        }
+    } 
+    // else if(lib_name == "io") {
+    //     if(func_name == "result") {
+    //         func_table["result"] = {"void", 1, {"STRING"}, {}};
+    //         /* tac.push_back("# Library function: io.result loaded (stub)"); */
+    //         string t = get_temp();
+    //         available_lib_functions[key].temp_name = t;
+    //         available_lib_functions[key].call_emitted = true;
+    //         tac.push_back(t + " = @call result void 1");
+    //     } else if(func_name == "input") {
+    //         func_table["input"] = {"STRING", 1, {"STRING"}, {}};
+    //         /* tac.push_back("# Library function: io.input loaded (stub)"); */
+    //         string t = get_temp();
+    //         available_lib_functions[key].temp_name = t;
+    //         available_lib_functions[key].call_emitted = true;
+    //         tac.push_back(t + " = @call input STRING 1");
+    //     }
+    // } 
+    else if(lib_name == "term") {
+        if(func_name == "clear") {
+            func_table["clear"] = {"void", 0, {}, {}};
+            /* tac.push_back("# Library function: term.clear loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call clear void 0");
+        } else if(func_name == "move_cursor") {
+            func_table["move_cursor"] = {"void", 2, {"INT", "INT"}, {}};
+            /* tac.push_back("# Library function: term.move_cursor loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call move_cursor void 2");
+        }
+    } else if(lib_name == "files") {
+        if(func_name == "exists") {
+            func_table["exists"] = {"INT", 1, {"STRING"}, {}};
+            /* tac.push_back("# Library function: files.exists loaded (stub)"); */
+            string t = get_temp();
+            available_lib_functions[key].temp_name = t;
+            available_lib_functions[key].call_emitted = true;
+            tac.push_back(t + " = @call exists INT 1");
+        }
+    }
+}
+
+
+int main(int argc, char *argv[]) {
+    /* yydebug = 1; */
+    init_library_registry();
+    yyparse();
+    for(auto item: errorBuffer){
+        cout << item << endl;
+    }
+    if(errorBuffer.size() > 0)
+        exit(0);
+    for(auto x: tac)
+        cout << x << endl;
+    return 0;
 }
