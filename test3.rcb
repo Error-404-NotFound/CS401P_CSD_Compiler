@@ -1,7 +1,0 @@
-func main() -> int {
-    h: handle<int> = make handle<int>;
-    h = 5;
-    result(h);
-    discard h;
-    reply 0;
-}
