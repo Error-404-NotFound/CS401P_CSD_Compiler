@@ -1,6 +1,5 @@
 func main() -> int {
-    n:int;
-    input(n);
+    n:int = 15;
     result("Fibonacci Series:");
     a:int=1;
     b:int=1;
