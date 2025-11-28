@@ -496,9 +496,9 @@ DeclarationStatement:
             errorBuffer.push_back("Error: '" + string($1.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
         }
         multiple_declaration(string($1.lexeme));
-        tac.push_back("- STRING_LITERAL " + string($1.lexeme));
-        tac.push_back(string($1.lexeme) + " = " + string($5.lexeme) + " STRING_LITERAL");
-        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { "STRING_LITERAL", scope_counter, string($5.lexeme).length(), 0, countn+1 };
+        tac.push_back("- STR " + string($1.lexeme));
+        tac.push_back(string($1.lexeme) + " = " + string($5.lexeme) + " STRL");
+        func_table[curr_func_name].symbol_table[string($1.lexeme)] = { "STR", scope_counter, string($5.lexeme).length(), 0, countn+1 };
     }
     | ID COLON DataTypeG ASSIGN EXPRESSION SEMICOLON {
         // is_reserved_word(string($1.lexeme));
@@ -1452,7 +1452,7 @@ RESULTStatement:
         tac.push_back("print " + string($3.lexeme) + " " + string($3.type));
     }
     | RESULT LPAR STRING_LITERAL RPAR SEMICOLON {
-        tac.push_back("print " + string($3.lexeme) + " STRING_LITERAL");
+        tac.push_back("print " + string($3.lexeme) + " STR");
     }
     ;
 

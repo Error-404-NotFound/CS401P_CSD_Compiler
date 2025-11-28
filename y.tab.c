@@ -2293,9 +2293,9 @@ case 65:
             errorBuffer.push_back("Error: '" + string(yyvsp[-5].node.lexeme) + "' is a reserved word and cannot be used as an identifier in line : " + to_string(countn+1));
         }
         multiple_declaration(string(yyvsp[-5].node.lexeme));
-        tac.push_back("- STRING_LITERAL " + string(yyvsp[-5].node.lexeme));
-        tac.push_back(string(yyvsp[-5].node.lexeme) + " = " + string(yyvsp[-1].node.lexeme) + " STRING_LITERAL");
-        func_table[curr_func_name].symbol_table[string(yyvsp[-5].node.lexeme)] = { "STRING_LITERAL", scope_counter, string(yyvsp[-1].node.lexeme).length(), 0, countn+1 };
+        tac.push_back("- STR " + string(yyvsp[-5].node.lexeme));
+        tac.push_back(string(yyvsp[-5].node.lexeme) + " = " + string(yyvsp[-1].node.lexeme) + " STRL");
+        func_table[curr_func_name].symbol_table[string(yyvsp[-5].node.lexeme)] = { "STR", scope_counter, string(yyvsp[-1].node.lexeme).length(), 0, countn+1 };
     ;
     break;}
 case 66:
@@ -3486,7 +3486,7 @@ case 172:
 case 173:
 #line 1454 "parser.y"
 {
-        tac.push_back("print " + string(yyvsp[-2].node.lexeme) + " STRING_LITERAL");
+        tac.push_back("print " + string(yyvsp[-2].node.lexeme) + " STR");
     ;
     break;}
 case 174:

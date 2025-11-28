@@ -2,7 +2,7 @@ main:
 @t0 = 15 INT
 - INT n
 n = @t0 INT
-print "Fibonacci Series:" STRING_LITERAL
+print "Fibonacci Series:" STR
 @t1 = 1 INT
 - INT a
 a = @t1 INT
